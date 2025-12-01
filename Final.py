@@ -808,7 +808,16 @@ st.write(
 # =========================================================
 if page == "🤖 Modelo de Predicción HDI":
     st.markdown('<h2 class="sub-header">Modelo de Predicción del HDI</h2>', unsafe_allow_html=True)
-    st.info("🤖 Modelo de regresión para predecir el HDI (2021) a partir de variables socioeconómicas básicas.")
+    st.info("""
+    🤖 Esta sección tiene dos componentes:
+    1) Un modelo que predice el HDI de 2021 usando variables socioeconómicas.
+    2) Un modelo por país que proyecta la tendencia futura del HDI hasta 2031.
+    """)
+
+    # =====================================================
+    # MODELO CROSS-SECTIONAL (HDI 2021 a partir de variables socioeconómicas)
+    # =====================================================
+    st.markdown("## 1️⃣ Predicción del HDI (2021) a partir de variables socioeconómicas")
 
     X_train, X_test, y_train, y_test, features, data_full = prepare_ml_data(df)
 
@@ -834,7 +843,8 @@ if page == "🤖 Modelo de Predicción HDI":
         st.markdown("- Expected years of schooling (2021)")
         st.markdown("- Mean years of schooling (2021)")
 
-    if st.button("🚀 Entrenar modelo", type="primary", use_container_width=True):
+    # Entrenamiento del modelo "clásico" HDI 2021
+    if st.button("🚀 Entrenar modelo (HDI 2021)", type="primary", use_container_width=True):
         with st.spinner("Entrenando modelo..."):
             if model_type == "Regresión Lineal":
                 model = LinearRegression()
@@ -897,13 +907,14 @@ if page == "🤖 Modelo de Predicción HDI":
             ))
 
             fig_pred.update_layout(
-                title="HDI real vs HDI predicho",
+                title="HDI real vs HDI predicho (modelo socioeconómico, 2021)",
                 xaxis_title="HDI real",
                 yaxis_title="HDI predicho",
                 height=500
             )
             st.plotly_chart(fig_pred, use_container_width=True)
 
+            # Importancia de variables (solo Random Forest)
             if model_type == "Random Forest":
                 st.markdown("### 🔍 Importancia de las variables")
                 importance_df = pd.DataFrame({
@@ -921,6 +932,7 @@ if page == "🤖 Modelo de Predicción HDI":
                 )
                 st.plotly_chart(fig_imp, use_container_width=True)
 
+            # Simulador de país hipotético
             st.markdown("### 🧪 Simulador de país hipotético")
             st.write(
                 "Aquí puedes mover las variables para crear un país hipotético y ver qué HDI le asignaría el modelo."
@@ -961,6 +973,167 @@ if page == "🤖 Modelo de Predicción HDI":
                 "HDI estimado para el país hipotético",
                 f"{hdi_pred_new:.3f}"
             )
+
+    # =====================================================
+    # MODELO TEMPORAL POR PAÍS: PROYECCIÓN HDI 2022–2031
+    # =====================================================
+    st.markdown("---")
+    st.markdown("## 2️⃣ Proyección del HDI por país (2022–2031)")
+
+    st.info("""
+    En esta sección entrenamos un modelo de regresión usando la serie histórica del HDI de un país
+    (por ejemplo, 1990–2021) para proyectar su posible trayectoria en los próximos 10 años.
+    """)
+
+    # Obtenemos la versión "larga" del HDI
+    hdi_long, hdi_years = get_hdi_columns(df)
+
+    # Selección de país
+    country_list = sorted(hdi_long["Country"].unique())
+    selected_country = st.selectbox(
+        "Selecciona un país para proyectar su HDI:",
+        country_list
+    )
+
+    # Filtramos la serie histórica de ese país (hasta 2021)
+    country_ts = (
+        hdi_long[(hdi_long["Country"] == selected_country) & (hdi_long["Year"] <= 2021)]
+        .dropna(subset=["HDI"])
+        .sort_values("Year")
+    )
+
+    if len(country_ts) < 5:
+        st.warning("Este país no tiene suficientes años de información histórica para entrenar un modelo razonable.")
+    else:
+        # Mostrar la serie histórica
+        st.markdown("### 📉 Serie histórica del HDI")
+        fig_hist = px.line(
+            country_ts,
+            x="Year",
+            y="HDI",
+            title=f"Evolución histórica del HDI en {selected_country}",
+            markers=True
+        )
+        fig_hist.update_yaxes(range=[0, 1])
+        st.plotly_chart(fig_hist, use_container_width=True)
+
+        # Selección de modelo temporal
+        col_ts1, col_ts2 = st.columns([2, 1])
+        with col_ts1:
+            ts_model_type = st.selectbox(
+                "Modelo para la proyección de la tendencia:",
+                ["Regresión lineal (tendencia)", "Random Forest (no lineal)"]
+            )
+        with col_ts2:
+            horizonte = st.slider(
+                "Años a proyectar hacia el futuro:",
+                min_value=5,
+                max_value=10,
+                value=10,
+                help="Número de años futuros a estimar a partir del último año disponible."
+            )
+
+        if st.button("📈 Generar proyección de HDI por país", type="secondary", use_container_width=True):
+            with st.spinner("Entrenando modelo temporal y generando proyección..."):
+                # Datos de entrenamiento: Year → HDI
+                X_ts = country_ts["Year"].values.reshape(-1, 1)
+                y_ts = country_ts["HDI"].values
+
+                # Selección de modelo
+                if ts_model_type.startswith("Regresión lineal"):
+                    ts_model = LinearRegression()
+                    ts_name = "Regresión lineal"
+                else:
+                    ts_model = RandomForestRegressor(
+                        n_estimators=300,
+                        max_depth=3,
+                        random_state=42
+                    )
+                    ts_name = "Random Forest (serie temporal simple)"
+
+                # Entrenar
+                ts_model.fit(X_ts, y_ts)
+
+                # Predicción para años futuros
+                last_year = int(country_ts["Year"].max())
+                future_years = np.arange(last_year + 1, last_year + 1 + horizonte)
+                X_future = future_years.reshape(-1, 1)
+                y_future_pred = ts_model.predict(X_future)
+
+                # Limitar HDI al rango [0, 1]
+                y_future_pred = np.clip(y_future_pred, 0, 1)
+
+                # DataFrame con resultados
+                forecast_df = pd.DataFrame({
+                    "Year": future_years,
+                    "HDI_pred": y_future_pred
+                })
+
+                st.success(f"✅ Proyección generada para {selected_country} usando {ts_name}.")
+
+                # Métrica simple de ajuste sobre la serie histórica (R² completo)
+                y_hist_pred = ts_model.predict(X_ts)
+                r2_ts = r2_score(y_ts, y_hist_pred)
+                mae_ts = mean_absolute_error(y_ts, y_hist_pred)
+
+                col_m1, col_m2 = st.columns(2)
+                with col_m1:
+                    st.metric("R² (ajuste histórico)", f"{r2_ts:.3f}")
+                with col_m2:
+                    st.metric("MAE (ajuste histórico)", f"{mae_ts:.3f}")
+
+                # Gráfico: histórico + proyección
+                st.markdown("### 🔮 Histórico vs. proyección del HDI")
+
+                fig_ts = go.Figure()
+
+                # Línea histórica
+                fig_ts.add_trace(go.Scatter(
+                    x=country_ts["Year"],
+                    y=country_ts["HDI"],
+                    mode="lines+markers",
+                    name="Histórico",
+                    line=dict(color=PRIMARY, width=3),
+                    marker=dict(size=8)
+                ))
+
+                # Línea proyectada
+                fig_ts.add_trace(go.Scatter(
+                    x=forecast_df["Year"],
+                    y=forecast_df["HDI_pred"],
+                    mode="lines+markers",
+                    name="Proyección",
+                    line=dict(color=DANGER, width=3, dash="dash"),
+                    marker=dict(size=8, symbol="circle-open")
+                ))
+
+                fig_ts.update_layout(
+                    title=f"Proyección del HDI de {selected_country} (hasta {int(forecast_df['Year'].max())})",
+                    xaxis_title="Año",
+                    yaxis_title="HDI",
+                    yaxis=dict(range=[0, 1]),
+                    hovermode="x unified",
+                    height=500
+                )
+
+                st.plotly_chart(fig_ts, use_container_width=True)
+
+                st.markdown("### 📋 Tabla de proyección")
+                st.dataframe(
+                    forecast_df.style.format({"HDI_pred": "{:.3f}"}),
+                    use_container_width=True
+                )
+
+                # Comentario interpretativo breve
+                delta_hdi = forecast_df["HDI_pred"].iloc[-1] - country_ts["HDI"].iloc[-1]
+                if abs(delta_hdi) < 0.01:
+                    msg = "La proyección sugiere una trayectoria relativamente estable en los próximos años."
+                elif delta_hdi > 0:
+                    msg = "La proyección sugiere una mejora gradual en el desarrollo humano de este país."
+                else:
+                    msg = "La proyección sugiere un posible deterioro o estancamiento en el desarrollo humano."
+
+                st.info(msg)
 
 # =========================================================
 # FOOTER
